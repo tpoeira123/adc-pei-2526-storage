@@ -6,6 +6,12 @@ import java.util.Calendar;
 import java.util.ArrayList;
 import java.util.logging.Logger;
 
+import java.util.Date;
+import java.util.List;
+import java.util.Calendar;
+import java.util.ArrayList;
+import java.util.logging.Logger;
+
 import com.google.cloud.datastore.*;
 import org.apache.commons.codec.digest.DigestUtils;
 
@@ -15,9 +21,14 @@ import jakarta.ws.rs.Path;
 import jakarta.ws.rs.Consumes;
 import jakarta.ws.rs.Produces;
 import jakarta.ws.rs.PathParam;
+import jakarta.ws.rs.QueryParam;
+import jakarta.ws.rs.core.Context;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
+import jakarta.ws.rs.core.HttpHeaders;
 import jakarta.ws.rs.core.Response.Status;
+
+import jakarta.servlet.http.HttpServletRequest;
 
 import pt.unl.fct.di.adc.firstwebapp.util.AuthToken;
 import pt.unl.fct.di.adc.firstwebapp.util.LoginData;
@@ -35,6 +46,8 @@ import com.google.gson.Gson;
 public class LoginResource {
 
 	private static final String MESSAGE_INVALID_CREDENTIALS = "Incorrect username or password.";
+	private static final String MESSAGE_NEXT_PARAMETER_INVALID = "Request parameter 'next' must be greater or equal to 0.";
+
 
 	private static final String LOG_MESSAGE_LOGIN_ATTEMP = "Login attempt by user: ";
 	private static final String LOG_MESSAGE_LOGIN_SUCCESSFUL = "Login successful by user: ";
@@ -302,5 +315,68 @@ public class LoginResource {
 				entity(MESSAGE_INVALID_CREDENTIALS)
 				.build();
 	}
+
+
+	// task5
+	@POST
+	@Path("/user/pagination")
+	@Consumes(MediaType.APPLICATION_JSON)
+	@Produces(MediaType.APPLICATION_JSON)
+	public Response getLatestLogins(@QueryParam("next") String nextParam, LoginData data) {		/// @QueryParam -> instead of just receiving a JSON body, also expects a variable directly in the URL called next
+																								/// ex: http://localhost:8080/rest/login/user/pagination/?next=0
+
+		int next;
+
+		/// Checks if the variable provided in the URL is a valid number and isn't a negative number before talking to the database
+		try {
+			next = Integer.parseInt(nextParam);
+			if(next < 0)
+				return Response.status(Status.BAD_REQUEST).entity(MESSAGE_NEXT_PARAMETER_INVALID).build();
+		}
+		catch (NumberFormatException e) {
+			return Response.status(Status.BAD_REQUEST).entity(MESSAGE_NEXT_PARAMETER_INVALID).build();
+		}
+
+		Key userKey = userKeyFactory.newKey(data.username);
+
+		Entity user = datastore.get(userKey);
+		if( user != null && user.getString(USER_PWD).equals(DigestUtils.sha512Hex(data.password))) {
+
+			/// same as v2
+			Calendar cal = Calendar.getInstance();
+			cal.add(Calendar.DATE, -1);
+			Timestamp yesterday = Timestamp.of(cal.getTime());
+
+			/// only difference is, we only grab 3 records (setLimit(3)) and we skip the first [next] records in the list (we already showed them to the user on the previous page)
+			Query<Entity> query = Query.newEntityQueryBuilder()
+					.setKind("UserLog")
+					.setFilter(
+							CompositeFilter.and(
+									PropertyFilter.hasAncestor(
+											datastore.newKeyFactory().setKind("User").newKey(data.username)),
+									PropertyFilter.ge(USER_LOGIN_TIME, yesterday)
+							)
+					)
+					.setOrderBy(OrderBy.desc(USER_LOGIN_TIME))
+					.setLimit(3)
+					.setOffset(next)
+					.build();
+			QueryResults<Entity> logs = datastore.run(query);
+
+			List<Date> loginDates = new ArrayList<>();
+			logs.forEachRemaining(userlog -> {
+				loginDates.add(userlog.getTimestamp(USER_LOGIN_TIME).toDate());
+			});
+
+			return Response.ok(g.toJson(loginDates)).build();
+		}
+		return Response.status(Status.FORBIDDEN).
+				entity(MESSAGE_INVALID_CREDENTIALS)
+				.build();
+	}
+
+
+
+
 
 }
