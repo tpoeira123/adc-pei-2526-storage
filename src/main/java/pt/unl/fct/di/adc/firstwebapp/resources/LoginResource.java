@@ -1,16 +1,20 @@
 package pt.unl.fct.di.adc.firstwebapp.resources;
 
-import java.sql.Time;
+import java.util.Date;
+import java.util.List;
+import java.util.Calendar;
+import java.util.ArrayList;
 import java.util.logging.Logger;
 
+import com.google.cloud.datastore.*;
 import org.apache.commons.codec.digest.DigestUtils;
 
-import jakarta.ws.rs.Consumes;
 import jakarta.ws.rs.GET;
 import jakarta.ws.rs.POST;
 import jakarta.ws.rs.Path;
-import jakarta.ws.rs.PathParam;
+import jakarta.ws.rs.Consumes;
 import jakarta.ws.rs.Produces;
+import jakarta.ws.rs.PathParam;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
 import jakarta.ws.rs.core.Response.Status;
@@ -19,18 +23,26 @@ import pt.unl.fct.di.adc.firstwebapp.util.AuthToken;
 import pt.unl.fct.di.adc.firstwebapp.util.LoginData;
 
 import com.google.cloud.Timestamp;
-import com.google.cloud.datastore.Key;
-import com.google.cloud.datastore.KeyFactory;
-import com.google.cloud.datastore.PathElement;
-import com.google.cloud.datastore.Datastore;
-import com.google.cloud.datastore.DatastoreOptions;
-import com.google.cloud.datastore.Entity;
+import com.google.cloud.datastore.StructuredQuery.OrderBy;
+import com.google.cloud.datastore.StructuredQuery.PropertyFilter;
+import com.google.cloud.datastore.StructuredQuery.CompositeFilter;
+
 import com.google.gson.Gson;
 
 
 @Path("/login")
 @Produces(MediaType.APPLICATION_JSON + ";charset=utf-8")
 public class LoginResource {
+
+	private static final String MESSAGE_INVALID_CREDENTIALS = "Incorrect username or password.";
+
+	private static final String LOG_MESSAGE_LOGIN_ATTEMP = "Login attempt by user: ";
+	private static final String LOG_MESSAGE_LOGIN_SUCCESSFUL = "Login successful by user: ";
+	private static final String LOG_MESSAGE_WRONG_PASSWORD = "Wrong password for: ";
+	private static final String LOG_MESSAGE_UNKNOW_USER = "Failed login attempt for username: ";
+
+	private static final String USER_PWD = "user_pwd";
+	private static final String USER_LOGIN_TIME = "user_login_time";
 
 	/** 
 	 * Logger Object
@@ -185,6 +197,110 @@ public class LoginResource {
 			LOG.warning("Failed login attempt for username: " + data.username);
 			return Response.status(Status.FORBIDDEN).build();
 		}
+	}
+
+
+
+	// task 4
+	@POST
+	@Path("/user/v1")
+	@Consumes(MediaType.APPLICATION_JSON)
+	@Produces(MediaType.APPLICATION_JSON)
+	public Response getUserLoginLogsV1(LoginData data) {
+		/// Get the date of yesterday ;; Calculate the exact time for 24 hours ago (Yesterday)
+		Calendar cal = Calendar.getInstance();
+
+		/// Subtract 1 day from the current date
+		cal.add(Calendar.DATE, -1);
+
+		/// Convert it to a Google Cloud Timestamp
+		Timestamp yesterday = Timestamp.of(cal.getTime());
+
+		/// Build the Database Query:
+		/// We only want to search through "UserLog" entities
+		/// CompositeFilter allows us to combine multiple conditions (AND)
+		/// Condition A: The log MUST belong to this specific user (The "Parent" folder)
+		/// Condition B: The login time MUST be Greater than or Equal (ge) to yesterday
+		Query<Entity> query = Query.newEntityQueryBuilder()
+				.setKind("UserLog")
+				.setFilter(
+						CompositeFilter.and(
+								StructuredQuery.PropertyFilter.hasAncestor(
+										datastore.newKeyFactory().setKind("User").newKey(data.username)),
+								PropertyFilter.ge(USER_LOGIN_TIME, yesterday)
+						)
+				).build();
+
+		/// Execute the query in database and store the results
+		QueryResults<Entity> logs = datastore.run(query);
+
+		/// Create an empty list to hold the final dates we want to show the user
+		List<Date> loginDates = new ArrayList<>();
+
+		/// Loop through every log the database found
+		/// Extract the timestamp, convert it to a standard Java Date, and add it to our list
+		logs.forEachRemaining(userlog -> {
+			loginDates.add(userlog.getTimestamp(USER_LOGIN_TIME).toDate());
+		});
+		return Response.ok(g.toJson(loginDates)).build();
+	}
+
+	@POST
+	@Path("/user/v2")
+	@Consumes(MediaType.APPLICATION_JSON)
+	@Produces(MediaType.APPLICATION_JSON)
+	public Response getLatestLogins(LoginData data) {
+
+		Key userKey = userKeyFactory.newKey(data.username);
+
+		Entity user = datastore.get(userKey);
+		if( user != null && user.getString(USER_PWD).equals(DigestUtils.sha512Hex(data.password))) {
+
+			/// Get the date of yesterday ;; Calculate the exact time for 24 hours ago (Yesterday)
+			Calendar cal = Calendar.getInstance();
+
+			/// Subtract 1 day from the current date
+			cal.add(Calendar.DATE, -1);
+
+			/// Convert it to a Google Cloud Timestamp
+			Timestamp yesterday = Timestamp.of(cal.getTime());
+
+			/// Build the Database Query:
+			/// We only want to search through "UserLog" entities
+			/// CompositeFilter allows us to combine multiple conditions (AND)
+			/// Condition A: The log MUST belong to this specific user (The "Parent" folder)
+			/// Condition B: The login time MUST be Greater than or Equal (ge) to yesterday
+			/// Restrict the database to return a maximum of 3 logs, saving read costs and memory
+			Query<Entity> query = Query.newEntityQueryBuilder()
+					.setKind("UserLog")
+					.setFilter(
+							CompositeFilter.and(
+									StructuredQuery.PropertyFilter.hasAncestor(
+											datastore.newKeyFactory().setKind("User").newKey(data.username)),
+									PropertyFilter.ge(USER_LOGIN_TIME, yesterday)
+							)
+					)
+					.setOrderBy(OrderBy.desc(USER_LOGIN_TIME))
+					.setLimit(3)
+					.build();
+
+			/// Execute the query in that base and store the results
+			QueryResults<Entity> logs = datastore.run(query);
+
+			/// Create an empty list to hold the final dates we want to show the user
+			List<Date> loginDates = new ArrayList<>();
+
+			/// Loop through every log the database found
+			/// Extract the timestamp, convert it to a standard Java Date, and add it to our list
+			logs.forEachRemaining(userlog -> {
+				loginDates.add(userlog.getTimestamp(USER_LOGIN_TIME).toDate());
+			});
+
+			return Response.ok(g.toJson(loginDates)).build();
+		}
+		return Response.status(Status.FORBIDDEN).
+				entity(MESSAGE_INVALID_CREDENTIALS)
+				.build();
 	}
 
 }
