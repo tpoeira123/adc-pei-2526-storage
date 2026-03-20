@@ -67,7 +67,7 @@ public class RegisterResources {
         LOG.fine("Registering user: " + data.username);
 
         /// checks if data has valid parameters
-        if(data.validRegistration()){
+        if(!data.validRegistration()){
             return Response.status(Response.Status.BAD_REQUEST).entity("Missing or wrong parameter").build();
         }
 
