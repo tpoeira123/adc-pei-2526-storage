@@ -382,35 +382,47 @@ public class LoginResource {
 	@Consumes(MediaType.APPLICATION_JSON)
 	@Produces(MediaType.APPLICATION_JSON)
 	public Response doLoginV2(LoginData data,
-							  @Context HttpServletRequest request,
-							  @Context HttpHeaders headers) {
+							  @Context HttpServletRequest request,	/// raw HTTP web request that the client just sent to your server
+							  @Context HttpHeaders headers) {		/// is a specialized object that just isolates the HTTP headers (the hidden metadata sent along with every web request)
 		LOG.fine(LOG_MESSAGE_LOGIN_ATTEMP + data.username);
 
+		/// Creates the primary Key to look up the User entity based on the provided username.
 		Key userKey = userKeyFactory.newKey(data.username);
+
+		/// Creates a Key for the user's statistics (login counts).
+		/// 'addAncestors': it makes the User the "parent" of these stats.
+		/// This creates an "Entity Group", which allows us to update the user and their stats safely in a single transaction.
 		Key ctrsKey = datastore.newKeyFactory()
 				.addAncestors(PathElement.of("User", data.username))
 				.setKind("UserStats")
 				.newKey("counters");
-		// Generate automatically a key
+
+		/// Creates a Key for the login audit log.
+		/// 'allocateId' asks the database to generate a unique, random ID for this specific log entry
+		/// so it doesn't overwrite previous logs. It is also stored as a child of the User.
 		Key logKey = datastore.allocateId(
 				datastore.newKeyFactory()
 						.addAncestors(PathElement.of("User", data.username))
 						.setKind("UserLog").newKey());
 
+		/// A transaction ensures that either ALL database writes succeed, or NONE do.
+		/// This prevents corrupted data if the server crashes halfway through the login process.
 		Transaction txn = datastore.newTransaction();
+
 		try {
 			Entity user = txn.get(userKey);
 			if (user == null) {
-				// Username does not exist
+				/// Fail fast: If the username isn't in the database, abort immediately.
 				LOG.warning(LOG_MESSAGE_LOGIN_ATTEMP + data.username);
 				return Response.status(Status.FORBIDDEN)
 						.entity(MESSAGE_INVALID_CREDENTIALS)
 						.build();
 			}
 
-			// We get the user stats from the storage
 			Entity stats = txn.get(ctrsKey);
 			if (stats == null) {
+				/// If this is the user's very first time logging in,
+				/// the stats entity won't exist yet. We create a fresh one with counters set to 0.
 				stats = Entity.newBuilder(ctrsKey)
 						.set("user_stats_logins", 0L)
 						.set("user_stats_failed", 0L)
@@ -419,14 +431,18 @@ public class LoginResource {
 						.build();
 			}
 
-			String hashedPWD = (String) user.getString(USER_PWD);
+			/// Retrieves the hashed password from the database and compares it
+			String hashedPWD = user.getString(USER_PWD);
 			if (hashedPWD.equals(DigestUtils.sha512Hex(data.password))) {
-				// Login successful
-				// Construct the logs
+
+				/// LOGIN ACCEPTED (right password)
+
+				/// Extracts the user's location and IP data from App Engine's automatic HTTP headers.
 				String cityLatLong = headers.getHeaderString("X-AppEngine-CityLatLong");
 				Entity log = Entity.newBuilder(logKey)
 						.set("user_login_ip", request.getRemoteAddr())
 						.set("user_login_host", request.getRemoteHost())
+						/// Only saves Lat/Long if it exists, and excludes it from database indexes to save costs
 						.set("user_login_latlon", cityLatLong != null
 								? StringValue.newBuilder(cityLatLong).setExcludeFromIndexes(true).build()
 								: StringValue.newBuilder("").setExcludeFromIndexes(true).build())
@@ -435,45 +451,64 @@ public class LoginResource {
 						.set("user_login_time", Timestamp.now())
 						.build();
 
-				// Get the user statistics and updates it
-				// Copying information every time a user logins may not be a good solution
-				// (why?)
+				/// "Copying information every time a user logins may not be a good solution (why?)"
+				/// Answer: Because if you add a new field to UserStats in the future, you have to remember
+				/// to manually copy it here, otherwise it will get deleted. It's also inefficient.
 				Entity ustats = Entity.newBuilder(ctrsKey)
 						.set("user_stats_logins", stats.getLong("user_stats_logins") + 1)
-						.set("user_stats_failed", 0L)
+						.set("user_stats_failed", 0L) // Reset failed attempts back to 0
 						.set("user_first_login", stats.getTimestamp("user_first_login"))
 						.set("user_last_login", Timestamp.now())
 						.build();
 
-				// Batch operation
-				txn.put(log, ustats);
-				txn.commit();
+				/*
+				  THE BETTER SOLUTION (For future reference):
+				  Instead of copying manually, build upon the existing entity:
+				  Entity ustats = Entity.newBuilder(stats)  <-- Pass 'stats' here!
+				  .set("user_stats_logins", stats.getLong("user_stats_logins") + 1)
+				  .set("user_stats_failed", 0L)
+				  .set("user_last_login", Timestamp.now())
+				  .build();
+				 */
 
-				// Return token
+				/// Saves both the log and the updated stats simultaneously.
+				txn.put(log, ustats);
+				txn.commit(); // Locks in the changes
+
+				/// Generates an access token and returns an HTTP 200 OK.
 				AuthToken token = new AuthToken(data.username);
 				LOG.info(LOG_MESSAGE_LOGIN_SUCCESSFUL + data.username);
 				return Response.ok(g.toJson(token)).build();
+
 			} else {
-				// Incorrect password
-				// Copying here is even worse. Propose a better solution!
+
+				/// LOGIN FAILED (Wrong Password)
+
+				/// Original comment: "Copying here is even worse. Propose a better solution!"
+				/// Answer: Again, use Entity.newBuilder(stats) so you only have to write the fields that actually changed!
 				Entity ustats = Entity.newBuilder(ctrsKey)
 						.set("user_stats_logins", stats.getLong("user_stats_logins"))
-						.set("user_stats_failed", stats.getLong("user_stats_failed") + 1L)
+						.set("user_stats_failed", stats.getLong("user_stats_failed") + 1L) // Increment fail count
 						.set("user_first_login", stats.getTimestamp("user_first_login"))
 						.set("user_last_login", stats.getTimestamp("user_last_login"))
 						.set("user_last_attempt", Timestamp.now())
 						.build();
 
+				///  save and rejects
 				txn.put(ustats);
-				txn.commit();
+				txn.commit(); /// Locks in the updated fail count
+
 				LOG.warning(LOG_MESSAGE_WRONG_PASSWORD + data.username);
 				return Response.status(Status.FORBIDDEN).entity(MESSAGE_INVALID_CREDENTIALS).build();
 			}
+
 		} catch (Exception e) {
 			txn.rollback();
 			LOG.severe(e.getMessage());
 			return Response.status(Status.INTERNAL_SERVER_ERROR).build();
 		} finally {
+			/// A safety net. If the transaction is still somehow active (e.g., a crash happened
+			/// before commit() or rollback() could run), force it to close to prevent database deadlocks.
 			if (txn.isActive()) {
 				txn.rollback();
 			}
