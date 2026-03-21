@@ -1,0 +1,16 @@
+one terminal:
+ gcloud beta emulators datastore start
+
+
+other:
+gcloud config set project <vosso-project-id>
+
+set DATASTORE_USE_PROJECT_ID_AS_APP_ID=true
+
+gcloud beta emulators datastore env-init
+
+set DATASTORE_DATASET=projeto-cvd
+set DATASTORE_EMULATOR_HOST=localhost:8081
+set DATASTORE_EMULATOR_HOST_PATH=localhost:8081/datastore
+set DATASTORE_HOST=http://localhost:8081
+set DATASTORE_PROJECT_ID=projeto-cvd
