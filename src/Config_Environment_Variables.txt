@@ -14,3 +14,13 @@ set DATASTORE_EMULATOR_HOST=localhost:8081
 set DATASTORE_EMULATOR_HOST_PATH=localhost:8081/datastore
 set DATASTORE_HOST=http://localhost:8081
 set DATASTORE_PROJECT_ID=projeto-cvd
+
+
+------------------------------------------------------------------------------
+deploy dao aplicação da google:
+
+gcloud auth login
+
+gcloud config set project <your-proj-id>
+
+mvn appengine:deploy -Dapp.deploy.projectId=<your-proj-id> -Dapp.deploy.version=<version-number>
