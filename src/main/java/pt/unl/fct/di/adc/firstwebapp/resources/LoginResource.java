@@ -435,7 +435,7 @@ public class LoginResource {
 			String hashedPWD = user.getString(USER_PWD);
 			if (hashedPWD.equals(DigestUtils.sha512Hex(data.password))) {
 
-				/// LOGIN ACCEPTED (right password)
+				/// LOGIN ACCEPTED (right password): The code constructs the log entity (containing IP address, city, and country) and updates the ustats entity. Then, it saves both to the database.
 
 				/// Extracts the user's location and IP data from App Engine's automatic HTTP headers.
 				String cityLatLong = headers.getHeaderString("X-AppEngine-CityLatLong");
@@ -482,7 +482,11 @@ public class LoginResource {
 
 			} else {
 
-				/// LOGIN FAILED (Wrong Password)
+				/// LOGIN FAILED (Wrong Password) - It completely ignores log creation. It only updates the statistics (adding +1 for failed attempts) and only saves the ustats.
+				/// suggestion from Gemini: create a UserLog either way, but with a new column like login_status
+				/// SUCCESS - if the login is successful
+				/// FAILED - if it's not, is a safety measure, if a hacker try's 50 times to log in the username 'eee' and fails, we know is ip address and what country he is
+				/// the code is not optimized to that suggestion
 
 				/// Original comment: "Copying here is even worse. Propose a better solution!"
 				/// Answer: Again, use Entity.newBuilder(stats) so you only have to write the fields that actually changed!
